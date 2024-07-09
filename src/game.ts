@@ -1,5 +1,5 @@
 import 'phaser';
-import * as faceapi from '@vladmandic/face-api';
+import * as faceapi from '@vladmandic/face-api/dist/face-api.esm.js';
 import tinyFaceDetectorModel from '../public/models/tiny_face_detector_model-weights_manifest.json';
 import faceLandmarkModel from '../public/models/face_landmark_68_model-weights_manifest.json';
 import faceRecognitionModel from '../public/models/face_recognition_model-weights_manifest.json';
@@ -23,14 +23,19 @@ export default class Demo extends Phaser.Scene {
     private snakeGraphics!: Phaser.GameObjects.Graphics;
     private direction: 'up' | 'down' | 'left' | 'right' = 'right';
     private moveTimer: number = 0;
-    private moveInterval: number = 400; // Move every 200ms
+    private moveInterval: number = 1000; // Move every 200ms
     private food: { x: number, y: number } | null = null;
     private foodGraphics!: Phaser.GameObjects.Graphics;
     private webcamVideo!: HTMLVideoElement;
-    private emotionText!: Phaser.GameObjects.Text;
     private emotionHistory: string[] = [];
     private emotionHistoryMaxLength = 30; // Adjust this value to change sensitivity
     private lastTurnTime = 0;
+    private gameState: 'instructions' | 'playing' = 'instructions';
+    private instructionText!: Phaser.GameObjects.Text;
+    private biasBar!: Phaser.GameObjects.Graphics;
+    private biasValue: number = 0;
+    private maxBiasValue: number = 100;
+    private minBias: number = 40;
 
     constructor() {
         super('demo');
@@ -42,6 +47,18 @@ export default class Demo extends Phaser.Scene {
 
         // Draw the grid
         this.drawGrid();
+
+        // Add instruction text
+        this.instructionText = this.add.text(
+            this.cameras.main.width / 2,
+            this.cameras.main.height / 2,
+            'UR-FACE-IS-A-SNAKE Instructions:\n\n' +
+            '1. Look surprised to start the game\n' +
+            '2. Smile to turn right\n' +
+            '3. Frown to turn left\n\n' +
+            'Look surprised to begin!',
+            { color: '#ffffff', fontSize: '24px', align: 'center' }
+        ).setOrigin(0.5);
 
         // Add score and high score text
         this.scoreText = this.add.text(
@@ -65,23 +82,19 @@ export default class Demo extends Phaser.Scene {
             { color: '#ffffff', fontSize: '24px' }
         ).setOrigin(1, 0);
 
-        this.resetGame();
-
         this.input.keyboard!.on('keydown', this.handleKeydown, this);
 
-        this.emotionText = this.add.text(
-            20,
-            this.cameras.main.height - 40,
-            'Emotion: Detecting...',
-            { color: '#ffffff', fontSize: '24px' }
-        );
+        // Create the bias bar
+        this.biasBar = this.add.graphics();
+        this.updateBiasBar();
+
         // Setup webcam and face detection
         await this.setupWebcam();
         await this.loadFaceApiModels();
         this.startFaceDetection();
 
-        // Add emotion text
-
+        // Don't initialize the game elements yet
+        // We'll do this when the game starts
     }
 
     private initializeGrid() {
@@ -254,6 +267,10 @@ export default class Demo extends Phaser.Scene {
             this.resetGame();
             return;
         }
+
+        // Reset bias after each movement
+        this.biasValue = 0;
+        this.updateBiasBar();
     }
 
     private getSnakeEnd(): { x: number, y: number } {
@@ -313,7 +330,6 @@ export default class Demo extends Phaser.Scene {
         this.updateHighScore();
         this.initializeSnake();
         this.direction = 'right';
-        this.spawnFood();
         this.updateScore();
 
     }
@@ -370,30 +386,47 @@ export default class Demo extends Phaser.Scene {
             if (detections.length > 0) {
                 const topEmotions = this.getTopKEmotions(detections[0].expressions, 3); // Get top 3 emotions
 
-                // Add the current top emotion to the history
-                for (let i = 0; i < topEmotions.length; i++) {
-                    for (let j = 0; j < topEmotions.length - i; j++) {
-                        this.emotionHistory.push(topEmotions[i]);
+                if (this.gameState === 'instructions') {
+                    if (topEmotions[0] === 'surprised') {
+                        this.startGame();
                     }
-                }
-                this.emotionHistory = this.emotionHistory.slice(0, this.emotionHistoryMaxLength);
-                // Start Generation Here
-                const emotionSummary = this.emotionHistory.reduce((acc, emotion) => {
-                    acc[emotion] = (acc[emotion] || 0) + 1;
-                    return acc;
-                }, {} as Record<string, number>);
-                const emotionSummaryText = Object.entries(emotionSummary)
-                    .map(([emotion, count]) => `${emotion}: ${count}`)
-                    .join(', ');
-                this.emotionText.setText(`Emotion : ${emotionSummaryText}`);
+                } else {
+                    // Add the current top emotion to the history
+                    for (let i = 0; i < topEmotions.length; i++) {
+                        for (let j = 0; j < topEmotions.length - i; j++) {
+                            this.emotionHistory.push(topEmotions[i]);
+                        }
+                    }
+                    this.emotionHistory = this.emotionHistory.slice(0, this.emotionHistoryMaxLength);
+                    // Start Generation Here
+                    const emotionSummary = this.emotionHistory.reduce((acc, emotion) => {
+                        acc[emotion] = (acc[emotion] || 0) + 1;
+                        return acc;
+                    }, {} as Record<string, number>);
+                    const emotionSummaryText = Object.entries(emotionSummary)
+                        .map(([emotion, count]) => `${emotion}: ${count}`)
+                        .join(', ');
 
+                    // Update bias based on emotions using emotionSummary with exponential impact
+                    if (emotionSummary['happy']) {
+                        this.biasValue = Math.min(this.biasValue + Math.pow(1.4, emotionSummary["happy"]) - 1, this.maxBiasValue);
+                    }
+                    if (emotionSummary['sad']) {
+                        this.biasValue = Math.max(this.biasValue - (Math.pow(1.4, emotionSummary["sad"]) - 1), -this.maxBiasValue);
+                    }
+                    if (emotionSummary['neutral']) {
+                        this.biasValue *= 0.9; // Decay the bias value by 10% when neutral
+                    }
 
-                // Check if it's time for a potential turn
-                const currentTime = Date.now();
-                if (currentTime - this.lastTurnTime >= this.moveInterval) {
-                    this.checkEmotionAndTurn();
-                    this.lastTurnTime = currentTime;
-                    this.emotionHistory = [];
+                    this.updateBiasBar();
+
+                    // Check if it's time for a potential turn
+                    const currentTime = Date.now();
+                    if (currentTime - this.lastTurnTime >= this.moveInterval) {
+                        this.checkEmotionAndTurn();
+                        this.lastTurnTime = currentTime;
+                        this.emotionHistory = [];
+                    }
                 }
             }
 
@@ -409,32 +442,67 @@ export default class Demo extends Phaser.Scene {
     }
 
     private checkEmotionAndTurn() {
-        const mostFrequentEmotion = this.emotionHistory.reduce((acc, emotion) => {
-            acc[emotion] = (acc[emotion] || 0) + 1;
-            return acc;
-        }, {} as Record<string, number>);
-        if (mostFrequentEmotion['neutral'] && mostFrequentEmotion['neutral'] < Object.values(mostFrequentEmotion).reduce((a, b) => a + b, 0) / 3) {
-            delete mostFrequentEmotion['neutral'];
-        }
-
-        const topEmotion = Object.entries(mostFrequentEmotion).sort((a, b) => b[1] - a[1])[0][0];
-
-        if (topEmotion === 'happy') {
-            this.turnSnake('left');
-        } else if(topEmotion === 'sad') {
+        if (this.biasValue > this.minBias) {
             this.turnSnake('right');
+        } else if (this.biasValue < -this.minBias) {
+            this.turnSnake('left');
         }
+        // Reset bias after turning
+        this.biasValue = 0;
+        this.updateBiasBar();
     }
 
-    update(time: number) {
-        // Game loop
-        if (time > this.moveTimer) {
-            this.moveSnake();
-            this.moveTimer = time + this.moveInterval;
-            this.updateScore();
+    private startGame() {
+        this.gameState = 'playing';
+        this.instructionText.destroy();
+        this.resetGame();
+        this.spawnFood();
+    }
+
+    private updateBiasBar() {
+        const barWidth = this.cameras.main.width - 40; // 20px padding on each side
+        const barHeight = 20;
+        const barY = this.cameras.main.height - barHeight - 10; // 10px from bottom
+
+        this.biasBar.clear();
+
+        // Draw background
+        this.biasBar.fillStyle(0x666666);
+        this.biasBar.fillRect(20, barY, barWidth, barHeight);
+
+        // Draw bias
+        const biasWidth = Math.abs(this.biasValue) / this.maxBiasValue * (barWidth / 2);
+        if (this.biasValue < 0) {
+            // Left bias (frowning)
+            this.biasBar.fillStyle(0xff0000);
+            this.biasBar.fillRect(20 + barWidth / 2 - biasWidth, barY, biasWidth, barHeight);
+        } else {
+            // Right bias (smiling)
+            this.biasBar.fillStyle(0x00ff00);
+            this.biasBar.fillRect(20 + barWidth / 2, barY, biasWidth, barHeight);
         }
-        this.drawSnake(); // Redraw snake every frame
-        this.drawFood();
+
+        // Draw center line
+        this.biasBar.fillStyle(0xffffff);
+        this.biasBar.fillRect(20 + barWidth / 2 - 1, barY, 2, barHeight);
+
+        // Draw minimum active bias lines
+        const minActiveBiasWidth = this.minBias / this.maxBiasValue * (barWidth / 2); // Assuming 10 as the minimum active bias
+        this.biasBar.fillStyle(0xffffff);
+        this.biasBar.fillRect(20 + barWidth / 2 - minActiveBiasWidth, barY, 1, barHeight); // Left side
+        this.biasBar.fillRect(20 + barWidth / 2 + minActiveBiasWidth, barY, 1, barHeight); // Right side
+    }
+    update(time: number) {
+        if (this.gameState === 'playing') {
+            // Game loop
+            if (time > this.moveTimer) {
+                this.moveSnake();
+                this.moveTimer = time + this.moveInterval;
+                this.updateScore();
+            }
+            this.drawSnake(); // Redraw snake every frame
+            this.drawFood();
+        }
     }
 }
 
