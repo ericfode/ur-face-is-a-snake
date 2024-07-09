@@ -356,7 +356,7 @@ export default class Demo extends Phaser.Scene {
     }
 
     private async loadFaceApiModels() {
-        const modelBaseUrl = '/models';
+        const modelBaseUrl = 'ur-face-is-a-snake/models';
         await faceapi.nets.tinyFaceDetector.loadFromUri(modelBaseUrl);
         await faceapi.nets.faceLandmark68Net.loadFromUri(modelBaseUrl);
         await faceapi.nets.faceRecognitionNet.loadFromUri(modelBaseUrl)
