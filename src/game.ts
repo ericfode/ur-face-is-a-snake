@@ -1,4 +1,10 @@
 import 'phaser';
+import * as faceapi from '@vladmandic/face-api';
+import tinyFaceDetectorModel from '../public/models/tiny_face_detector_model-weights_manifest.json';
+import faceLandmarkModel from '../public/models/face_landmark_68_model-weights_manifest.json';
+import faceRecognitionModel from '../public/models/face_recognition_model-weights_manifest.json';
+import faceExpressionModel from '../public/models/face_expression_model-weights_manifest.json';
+
 
 export default class Demo extends Phaser.Scene {
     private scoreText!: Phaser.GameObjects.Text;
@@ -17,15 +23,20 @@ export default class Demo extends Phaser.Scene {
     private snakeGraphics!: Phaser.GameObjects.Graphics;
     private direction: 'up' | 'down' | 'left' | 'right' = 'right';
     private moveTimer: number = 0;
-    private moveInterval: number = 200; // Move every 200ms
+    private moveInterval: number = 400; // Move every 200ms
     private food: { x: number, y: number } | null = null;
     private foodGraphics!: Phaser.GameObjects.Graphics;
+    private webcamVideo!: HTMLVideoElement;
+    private emotionText!: Phaser.GameObjects.Text;
+    private emotionHistory: string[] = [];
+    private emotionHistoryMaxLength = 30; // Adjust this value to change sensitivity
+    private lastTurnTime = 0;
 
     constructor() {
         super('demo');
     }
 
-    create() {
+    async create() {
         // Initialize the grid
         this.initializeGrid();
 
@@ -34,29 +45,43 @@ export default class Demo extends Phaser.Scene {
 
         // Add score and high score text
         this.scoreText = this.add.text(
-            this.cameras.main.width - 20, 
-            20, 
-            'Score: 3', 
+            this.cameras.main.width - 20,
+            20,
+            'Score: 3',
             { color: '#ffffff', fontSize: '24px' }
         ).setOrigin(1, 0);
 
         this.highScoreText = this.add.text(
-            this.cameras.main.width - 20, 
-            50, 
-            `High Score: ${this.highScore}`, 
+            this.cameras.main.width - 20,
+            50,
+            `High Score: ${this.highScore}`,
             { color: '#ffffff', fontSize: '24px' }
         ).setOrigin(1, 0);
 
         this.deathsText = this.add.text(
-            this.cameras.main.width - 20, 
-            80, 
-            `Deaths: ${this.deaths}`, 
+            this.cameras.main.width - 20,
+            80,
+            `Deaths: ${this.deaths}`,
             { color: '#ffffff', fontSize: '24px' }
         ).setOrigin(1, 0);
 
         this.resetGame();
 
         this.input.keyboard!.on('keydown', this.handleKeydown, this);
+
+        this.emotionText = this.add.text(
+            20,
+            this.cameras.main.height - 40,
+            'Emotion: Detecting...',
+            { color: '#ffffff', fontSize: '24px' }
+        );
+        // Setup webcam and face detection
+        await this.setupWebcam();
+        await this.loadFaceApiModels();
+        this.startFaceDetection();
+
+        // Add emotion text
+
     }
 
     private initializeGrid() {
@@ -91,7 +116,7 @@ export default class Demo extends Phaser.Scene {
             for (let i = 1; i <= fadeWidth; i++) {
                 const alpha = 1 - (i / (fadeWidth + 1));
                 graphics.lineStyle(1, lineColor, alpha);
-                
+
                 graphics.beginPath();
                 graphics.moveTo(x1 + dx * i, y1 + dy * i);
                 graphics.lineTo(x2 + dx * i, y2 + dy * i);
@@ -129,7 +154,7 @@ export default class Demo extends Phaser.Scene {
         const middleX = Math.floor(this.gridSize.width / 2);
         const middleY = Math.floor(this.gridSize.height / 2);
         this.snakeGraphics = this.add.graphics();
-        
+
         this.snake = {
             head: { x: middleX, y: middleY },
             body: [
@@ -145,13 +170,13 @@ export default class Demo extends Phaser.Scene {
         // Draw head
         this.snakeGraphics.fillStyle(0x00ff00); // Green for head
         const headPos = this.gridToScreenPosition(this.snake.head.x, this.snake.head.y);
-        this.snakeGraphics.fillRect(headPos.x - this.cellSize/2, headPos.y - this.cellSize/2, this.cellSize, this.cellSize);
+        this.snakeGraphics.fillRect(headPos.x - this.cellSize / 2, headPos.y - this.cellSize / 2, this.cellSize, this.cellSize);
 
         // Draw body
         this.snakeGraphics.fillStyle(0x00cc00); // Darker green for body
         this.snake.body.forEach(segment => {
             const segmentPos = this.gridToScreenPosition(segment.x, segment.y);
-            this.snakeGraphics.fillRect(segmentPos.x - this.cellSize/2, segmentPos.y - this.cellSize/2, this.cellSize, this.cellSize);
+            this.snakeGraphics.fillRect(segmentPos.x - this.cellSize / 2, segmentPos.y - this.cellSize / 2, this.cellSize, this.cellSize);
         });
     }
 
@@ -172,13 +197,13 @@ export default class Demo extends Phaser.Scene {
     private turnSnake(turn: 'forward' | 'left' | 'right') {
         const directions: ('up' | 'down' | 'left' | 'right')[] = ['up', 'right', 'down', 'left'];
         let index = directions.indexOf(this.direction);
-        
+
         if (turn === 'left') {
             index = (index - 1 + 4) % 4;
         } else if (turn === 'right') {
             index = (index + 1) % 4;
         }
-        
+
         this.direction = directions[index];
     }
 
@@ -267,11 +292,11 @@ export default class Demo extends Phaser.Scene {
     }
 
     private updateHighScore() {
-        if (this.snake){
-        const currentScore = this.snake.body.length + 1;
-        if (currentScore > this.highScore) {
-            this.highScore = currentScore;
-            this.highScoreText.setText(`High Score: ${this.highScore}`);
+        if (this.snake) {
+            const currentScore = this.snake.body.length + 1;
+            if (currentScore > this.highScore) {
+                this.highScore = currentScore;
+                this.highScoreText.setText(`High Score: ${this.highScore}`);
             }
         }
     }
@@ -294,9 +319,111 @@ export default class Demo extends Phaser.Scene {
     }
 
     private checkCollision(): boolean {
-        return this.snake.body.some(segment => 
+        return this.snake.body.some(segment =>
             segment.x === this.snake.head.x && segment.y === this.snake.head.y
         );
+    }
+
+    private async setupWebcam() {
+        this.webcamVideo = document.createElement('video');
+        this.webcamVideo.style.position = 'absolute';
+        this.webcamVideo.style.top = `${this.cameras.main.height}px`;
+        this.webcamVideo.style.left = '0px';
+        document.body.appendChild(this.webcamVideo);
+
+        const stream = await navigator.mediaDevices.getUserMedia({ video: {} });
+        this.webcamVideo.srcObject = stream;
+        await new Promise<void>((resolve) => this.webcamVideo.onloadedmetadata = () => {
+            this.webcamVideo.play();
+            resolve();
+        });
+    }
+
+    private async loadFaceApiModels() {
+        const modelBaseUrl = '/models';
+        await faceapi.nets.tinyFaceDetector.loadFromUri(modelBaseUrl);
+        await faceapi.nets.faceLandmark68Net.loadFromUri(modelBaseUrl);
+        await faceapi.nets.faceRecognitionNet.loadFromUri(modelBaseUrl)
+        await faceapi.nets.faceExpressionNet.loadFromUri(modelBaseUrl);
+    }
+    private async startFaceDetection() {
+        const canvas = faceapi.createCanvasFromMedia(this.webcamVideo);
+        canvas.style.position = 'absolute';
+        canvas.style.top = `${this.cameras.main.height}px`;
+        canvas.style.left = '0px';
+        document.body.appendChild(canvas);
+
+        const displaySize = { width: this.cameras.main.width, height: this.cameras.main.height };
+        faceapi.matchDimensions(canvas, displaySize);
+
+        setInterval(async () => {
+            const detections = await faceapi.detectAllFaces(this.webcamVideo, new faceapi.TinyFaceDetectorOptions())
+                .withFaceLandmarks()
+                .withFaceExpressions();
+
+            const resizedDetections = faceapi.resizeResults(detections, displaySize);
+            canvas.getContext('2d')!.clearRect(0, 0, canvas.width, canvas.height);
+            faceapi.draw.drawDetections(canvas, resizedDetections);
+            faceapi.draw.drawFaceLandmarks(canvas, resizedDetections);
+            faceapi.draw.drawFaceExpressions(canvas, resizedDetections);
+
+            if (detections.length > 0) {
+                const topEmotions = this.getTopKEmotions(detections[0].expressions, 3); // Get top 3 emotions
+
+                // Add the current top emotion to the history
+                for (let i = 0; i < topEmotions.length; i++) {
+                    for (let j = 0; j < topEmotions.length - i; j++) {
+                        this.emotionHistory.push(topEmotions[i]);
+                    }
+                }
+                this.emotionHistory = this.emotionHistory.slice(0, this.emotionHistoryMaxLength);
+                // Start Generation Here
+                const emotionSummary = this.emotionHistory.reduce((acc, emotion) => {
+                    acc[emotion] = (acc[emotion] || 0) + 1;
+                    return acc;
+                }, {} as Record<string, number>);
+                const emotionSummaryText = Object.entries(emotionSummary)
+                    .map(([emotion, count]) => `${emotion}: ${count}`)
+                    .join(', ');
+                this.emotionText.setText(`Emotion : ${emotionSummaryText}`);
+
+
+                // Check if it's time for a potential turn
+                const currentTime = Date.now();
+                if (currentTime - this.lastTurnTime >= this.moveInterval) {
+                    this.checkEmotionAndTurn();
+                    this.lastTurnTime = currentTime;
+                    this.emotionHistory = [];
+                }
+            }
+
+
+        }, 100);
+    }
+
+    private getTopKEmotions(expressions: faceapi.FaceExpressions, k: number): string[] {
+        return Object.entries(expressions)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, k)
+            .map(entry => entry[0]);
+    }
+
+    private checkEmotionAndTurn() {
+        const mostFrequentEmotion = this.emotionHistory.reduce((acc, emotion) => {
+            acc[emotion] = (acc[emotion] || 0) + 1;
+            return acc;
+        }, {} as Record<string, number>);
+        if (mostFrequentEmotion['neutral'] && mostFrequentEmotion['neutral'] < Object.values(mostFrequentEmotion).reduce((a, b) => a + b, 0) / 3) {
+            delete mostFrequentEmotion['neutral'];
+        }
+
+        const topEmotion = Object.entries(mostFrequentEmotion).sort((a, b) => b[1] - a[1])[0][0];
+
+        if (topEmotion === 'happy') {
+            this.turnSnake('left');
+        } else if(topEmotion === 'sad') {
+            this.turnSnake('right');
+        }
     }
 
     update(time: number) {

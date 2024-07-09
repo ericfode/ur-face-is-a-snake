@@ -1,5 +1,6 @@
 const path = require('path');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
+const CopyWebpackPlugin = require('copy-webpack-plugin');
 
 module.exports = {
   entry: './src/game.ts',
@@ -14,6 +15,25 @@ module.exports = {
         test: /\.ts$/,
         use: 'ts-loader',
         exclude: /node_modules/
+      },
+      {
+        test: /\.tflite$/,
+        use: [
+          {
+            loader: 'file-loader',
+            options: {
+              outputPath: 'models',
+              name: '[name].[ext]',
+            },
+          },
+        ],
+      },
+      {
+        test: /\.(json|bin)$/,
+        type: 'asset/resource',
+        generator: {
+          filename: 'models/[name][ext]'
+        }
       }
     ]
   },
@@ -23,6 +43,11 @@ module.exports = {
   plugins: [
     new HtmlWebpackPlugin({
       template: './src/index.html'
+    }),
+    new CopyWebpackPlugin({
+      patterns: [
+        { from: 'public/models', to: 'models' }
+      ]
     })
   ],
   devServer: {
