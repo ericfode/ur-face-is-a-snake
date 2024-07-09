@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "dgSpecHash": "BSdrCBpYnOV5/zlqRds/xbtTayHXqsxQw4pRhgJgRmfjKRW4w080ZXbni9+hpsgZhJWmlvmbr40jVlq1ZSRpAQ==",
+  "success": true,
+  "projectFilePath": "C:\\Users\\ericf\\ur-face-is-a-snake\\ur-face-is-a-snake.fsproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\ericf\\.nuget\\packages\\fable.core\\4.3.0\\fable.core.4.3.0.nupkg.sha512",
+    "C:\\Users\\ericf\\.nuget\\packages\\fsharp.core\\8.0.101\\fsharp.core.8.0.101.nupkg.sha512"
+  ],
+  "logs": []
+}
